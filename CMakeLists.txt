@@ -16,7 +16,7 @@ option(ENABLE_JAVA "Compile Java projects, requires a JDK and the JAVA_HOME env 
 
 option(USE_EXTERNAL_GLES3 "Experimental: Compile Filament against OpenGL ES 3" OFF)
 
-option(GENERATE_WEB_DOCS "Build WebGL documentation and tutorials" OFF)
+option(GENERATE_JS_DOCS "Build WebGL documentation and tutorials" OFF)
 
 # ==================================================================================================
 # OS specific
@@ -238,9 +238,8 @@ if (FILAMENT_SUPPORTS_METAL)
     add_definitions(-DFILAMENT_SUPPORTS_METAL)
 endif()
 
-# Building filamat increases build times and isn't required for non-desktop platforms, so turn it
-# off by default.
-if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
+# Building filamat increases build times and isn't required for web, so turn it off by default.
+if (NOT WEBGL)
     option(FILAMENT_BUILD_FILAMAT "Build filamat and JNI buildings" ON)
 else()
     option(FILAMENT_BUILD_FILAMAT "Build filamat and JNI buildings" OFF)
@@ -303,7 +302,9 @@ endif()
 # ==================================================================================================
 
 # Sets the following variables: RESGEN_HEADER, RESGEN_SOURCE, RESGEN_FLAGS, RESGEN_SOURCE_FLAGS,
-# and RESGEN_OUTPUTS
+# and RESGEN_OUTPUTS. Please pass in an ARCHIVE_NAME that is unique to your project, otherwise the
+# incbin directive will happily consume a blob from the wrong project without warnings or errors.
+# Also be sure to include the ASM language in the CMake "project" directive for your project.
 function(get_resgen_vars ARCHIVE_DIR ARCHIVE_NAME)
     set(OUTPUTS
         ${ARCHIVE_DIR}/${ARCHIVE_NAME}.bin
@@ -318,7 +319,7 @@ function(get_resgen_vars ARCHIVE_DIR ARCHIVE_NAME)
     set(RESGEN_HEADER "${ARCHIVE_DIR}/${ARCHIVE_NAME}.h" PARENT_SCOPE)
     # Visual Studio makes it difficult to use assembly without using MASM. MASM doesn't support
     # the equivalent of .incbin, so on Windows we'll just tell resgen to output a C file.
-    if (WEBGL OR WIN32)
+    if (WEBGL OR WIN32 OR ANDROID_ON_WINDOWS)
         set(RESGEN_OUTPUTS "${OUTPUTS};${ARCHIVE_DIR}/${ARCHIVE_NAME}.c" PARENT_SCOPE)
         set(RESGEN_FLAGS -cx ${ARCHIVE_DIR} -p ${ARCHIVE_NAME} PARENT_SCOPE)
         set(RESGEN_SOURCE "${ARCHIVE_DIR}/${ARCHIVE_NAME}.c" PARENT_SCOPE)
@@ -339,6 +340,9 @@ add_subdirectory(${EXTERNAL}/libgtest/tnt)
 add_subdirectory(${LIBRARIES}/filabridge)
 add_subdirectory(${LIBRARIES}/filaflat)
 add_subdirectory(${LIBRARIES}/filameshio)
+add_subdirectory(${LIBRARIES}/geometry)
+add_subdirectory(${LIBRARIES}/gltfio)
+add_subdirectory(${LIBRARIES}/ibl)
 add_subdirectory(${LIBRARIES}/image)
 add_subdirectory(${LIBRARIES}/math)
 add_subdirectory(${LIBRARIES}/utils)
@@ -348,6 +352,9 @@ add_subdirectory(${EXTERNAL}/robin-map/tnt)
 add_subdirectory(${EXTERNAL}/smol-v/tnt)
 add_subdirectory(${EXTERNAL}/benchmark/tnt)
 add_subdirectory(${EXTERNAL}/meshoptimizer)
+add_subdirectory(${EXTERNAL}/cgltf/tnt)
+add_subdirectory(${EXTERNAL}/xatlas/tnt)
+add_subdirectory(${EXTERNAL}/stb/tnt)
 
 if (FILAMENT_BUILD_FILAMAT)
     # spirv-tools must come before filamat, as filamat relies on the presence of the
@@ -373,12 +380,11 @@ if (WEBGL)
     add_subdirectory(web/filament-js)
     add_subdirectory(web/samples)
 
-    if (GENERATE_WEB_DOCS)
+    if (GENERATE_JS_DOCS)
         add_subdirectory(web/docs)
     endif()
 
     add_subdirectory(${EXTERNAL}/imgui/tnt)
-    add_subdirectory(${EXTERNAL}/stb/tnt)
 endif()
 
 if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
@@ -399,7 +405,6 @@ if (NOT ANDROID AND NOT WEBGL AND NOT IOS)
     add_subdirectory(${EXTERNAL}/libsdl2/tnt)
     add_subdirectory(${EXTERNAL}/libz/tnt)
     add_subdirectory(${EXTERNAL}/skylight/tnt)
-    add_subdirectory(${EXTERNAL}/stb/tnt)
     add_subdirectory(${EXTERNAL}/tinyexr/tnt)
 
     add_subdirectory(${TOOLS}/cmgen)

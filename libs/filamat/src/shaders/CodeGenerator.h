@@ -25,8 +25,8 @@
 
 #include <filamat/MaterialBuilder.h>
 
-#include <filament/driver/DriverEnums.h>
-#include <filament/EngineEnums.h>
+#include <backend/DriverEnums.h>
+#include <private/filament/EngineEnums.h>
 #include <filament/MaterialEnums.h>
 #include <private/filament/SamplerInterfaceBlock.h>
 #include <private/filament/UniformInterfaceBlock.h>
@@ -36,19 +36,20 @@
 namespace filamat {
 
 class UTILS_PRIVATE CodeGenerator {
-    using ShaderType = filament::driver::ShaderType;
+    using ShaderType = filament::backend::ShaderType;
     using TargetApi = MaterialBuilder::TargetApi;
+    using TargetLanguage = MaterialBuilder::TargetLanguage;
 public:
-    CodeGenerator(filament::driver::ShaderModel shaderModel,
-            TargetApi targetApi, TargetApi codeGenTargetApi) noexcept
-            : mShaderModel(shaderModel), mTargetApi(targetApi), mCodeGenTargetApi(codeGenTargetApi) {
+    CodeGenerator(filament::backend::ShaderModel shaderModel,
+            TargetApi targetApi, TargetLanguage targetLanguage) noexcept
+            : mShaderModel(shaderModel), mTargetApi(targetApi), mTargetLanguage(targetLanguage) {
         if (targetApi == TargetApi::ALL) {
             utils::slog.e << "Must resolve target API before codegen." << utils::io::endl;
             std::terminate();
         }
     }
 
-    filament::driver::ShaderModel getShaderModel() const noexcept { return mShaderModel; }
+    filament::backend::ShaderModel getShaderModel() const noexcept { return mShaderModel; }
 
     // insert a separator (can be a new line)
     std::ostream& generateSeparator(std::ostream& out) const;
@@ -96,7 +97,7 @@ public:
 
     // generate material properties getters
     std::ostream& generateMaterialProperty(std::ostream& out,
-            filament::Property property, bool isSet) const;
+            MaterialBuilder::Property property, bool isSet) const;
 
     std::ostream& generateFunction(std::ostream& out,
             const char* returnType, const char* name, const char* body) const;
@@ -113,27 +114,27 @@ public:
             std::string& shader, filament::SamplerInterfaceBlock const& sib) noexcept;
 
 private:
-    filament::driver::Precision getDefaultPrecision(ShaderType type) const;
-    filament::driver::Precision getDefaultUniformPrecision() const;
+    filament::backend::Precision getDefaultPrecision(ShaderType type) const;
+    filament::backend::Precision getDefaultUniformPrecision() const;
 
-    const char* getUniformPrecisionQualifier(filament::driver::UniformType type,
-            filament::driver::Precision precision,
-            filament::driver::Precision uniformPrecision,
-            filament::driver::Precision defaultPrecision) const noexcept;
+    const char* getUniformPrecisionQualifier(filament::backend::UniformType type,
+            filament::backend::Precision precision,
+            filament::backend::Precision uniformPrecision,
+            filament::backend::Precision defaultPrecision) const noexcept;
 
     // return type name of sampler  (e.g.: "sampler2D")
-    char const* getSamplerTypeName(filament::driver::SamplerType type,
-            filament::driver::SamplerFormat format, bool multisample) const noexcept;
+    char const* getSamplerTypeName(filament::backend::SamplerType type,
+            filament::backend::SamplerFormat format, bool multisample) const noexcept;
 
     // return name of the material property (e.g.: "ROUGHNESS")
-    static char const* getConstantName(filament::Property property) noexcept;
+    static char const* getConstantName(MaterialBuilder::Property property) noexcept;
 
-    static char const* getPrecisionQualifier(filament::driver::Precision precision,
-            filament::driver::Precision defaultPrecision) noexcept;
+    static char const* getPrecisionQualifier(filament::backend::Precision precision,
+            filament::backend::Precision defaultPrecision) noexcept;
 
-    filament::driver::ShaderModel mShaderModel;
+    filament::backend::ShaderModel mShaderModel;
     TargetApi mTargetApi;
-    TargetApi mCodeGenTargetApi;
+    TargetLanguage mTargetLanguage;
 
     // return type name of uniform  (e.g.: "vec3", "vec4", "float")
     static char const* getUniformTypeName(filament::UniformInterfaceBlock::Type uniformType) noexcept;

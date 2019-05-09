@@ -61,11 +61,11 @@ static Texture* loadNormalMap(Engine* engine, const uint8_t* normals, size_t nby
             .width(uint32_t(w))
             .height(uint32_t(h))
             .levels(0xff)
-            .format(driver::TextureFormat::RGB8)
+            .format(Texture::InternalFormat::RGB8)
             .build(*engine);
     Texture::PixelBufferDescriptor buffer(data, size_t(w * h * 3),
             Texture::Format::RGB, Texture::Type::UBYTE,
-            (driver::BufferDescriptor::Callback) &stbi_image_free);
+            (Texture::PixelBufferDescriptor::Callback) &stbi_image_free);
     normalMap->setImage(*engine, 0, std::move(buffer));
     normalMap->generateMipmaps(*engine);
     return normalMap;
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
 
         auto ibl = FilamentApp::get().getIBL()->getIndirectLight();
         ibl->setIntensity(100000);
-        ibl->setRotation(mat3f::rotate(0.5f, float3{ 0, 1, 0 }));
+        ibl->setRotation(mat3f::rotation(0.5f, float3{ 0, 1, 0 }));
 
         // Add geometry into the scene.
         app.mesh = filamesh::MeshReader::loadMeshFromBuffer(engine, RESOURCES_SUZANNE_DATA, nullptr,

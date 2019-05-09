@@ -24,9 +24,9 @@
 
 #include "details/Allocators.h"
 
-#include "driver/DriverApiForward.h"
+#include "private/backend/DriverApiForward.h"
 
-#include <filament/driver/DriverEnums.h>
+#include <backend/DriverEnums.h>
 
 #include <utils/Log.h>
 
@@ -64,6 +64,9 @@ public:
         Builder(Builder const&) = delete;
         Builder& operator=(Builder const&) = delete;
 
+        // Return the name of the pass being built
+        const char* getPassName() const noexcept;
+
         // Create a virtual resource that can eventually turn into a concrete texture or
         // render target
         FrameGraphResource createTexture(const char* name,
@@ -71,6 +74,8 @@ public:
 
         // Read from a resource (i.e. add a reference to that resource)
         FrameGraphResource read(FrameGraphResource const& input);
+
+        FrameGraphResource::Descriptor const& getDescriptor(FrameGraphResource const& r);
 
         /*
          * Use this resource as a render target.
@@ -84,15 +89,22 @@ public:
 
         Attachments useRenderTarget(const char* name,
                 FrameGraphRenderTarget::Descriptor const& desc,
-                driver::TargetBufferFlags clearFlags = {}) noexcept;
+                backend::TargetBufferFlags clearFlags = {}) noexcept;
 
         // helper for single color attachment
         Attachments useRenderTarget(FrameGraphResource texture,
-                driver::TargetBufferFlags clearFlags = {}) noexcept;
+                backend::TargetBufferFlags clearFlags = {}) noexcept;
 
         // Declare that this pass has side effects outside the framegraph (i.e. it can't be culled)
         // Calling write() on an imported resource automatically adds a side-effect.
         Builder& sideEffect() noexcept;
+
+        // returns whether this resource is an attachment to some rendertarget
+        bool isAttachment(FrameGraphResource resource) const noexcept;
+
+        // returns the descriptor of the render target this attachment belongs to
+        FrameGraphRenderTarget::Descriptor const& getRenderTargetDescriptor(
+                FrameGraphResource attachment) const;
 
     private:
         // this is private for now because we only have textures, and this is for regular buffers
@@ -150,28 +162,29 @@ public:
     // Import a write-only render target from outside the framegraph and returns a handle to it.
     FrameGraphResource importResource(const char* name,
             FrameGraphRenderTarget::Descriptor descriptor,
-            Handle<HwRenderTarget> target, uint32_t width, uint32_t height,
-            driver::TargetBufferFlags discardStart = driver::TargetBufferFlags::NONE,
-            driver::TargetBufferFlags discardEnd = driver::TargetBufferFlags::NONE);
+            backend::Handle<backend::HwRenderTarget> target, uint32_t width, uint32_t height,
+            backend::TargetBufferFlags discardStart = backend::TargetBufferFlags::NONE,
+            backend::TargetBufferFlags discardEnd = backend::TargetBufferFlags::NONE);
 
     // Import a read-only render target from outside the framegraph and returns a handle to it.
     FrameGraphResource importResource(
             const char* name, FrameGraphResource::Descriptor const& descriptor,
-            Handle<HwTexture> color);
+            backend::Handle<backend::HwTexture> color);
 
 
     // Moves the resource associated to the handle 'from' to the handle 'to'. After this call,
     // all handles referring to the resource 'to' are redirected to the resource 'from'
     // (including handles used in the past).
     // All writes to 'from' are disconnected (i.e. these passes loose a reference).
-    // Returns true on success, false if one of the handle was invalid.
-    bool moveResource(FrameGraphResource from, FrameGraphResource to);
+    // Return a new handle for the 'from' resource and makes the 'from' handle invalid (i.e. it's
+    // similar to if we had written to the 'from' resource)
+    FrameGraphResource moveResource(FrameGraphResource from, FrameGraphResource to);
 
     // allocates concrete resources and culls unreferenced passes
     FrameGraph& compile() noexcept;
 
     // execute all referenced passes
-    void execute(driver::DriverApi& driver) noexcept;
+    void execute(backend::DriverApi& driver) noexcept;
 
     // for debugging
     void export_graphviz(utils::io::ostream& out);
@@ -188,22 +201,27 @@ private:
         Deleter(FrameGraph& fg) noexcept : fg(fg) {} // NOLINT(google-explicit-constructor)
         void operator()(T* object) noexcept { fg.mArena.destroy(object); }
     };
-    template <typename T> using UniquePtr = std::unique_ptr<T, Deleter<T>>;
-    template <typename T> using Allocator = utils::STLAllocator<T, details::LinearAllocatorArena>;
-    template <typename T> using Vector = std::vector<T, Allocator<T>>; // 32 bytes
+
+    template<typename T> using UniquePtr = std::unique_ptr<T, Deleter<T>>;
+    template<typename T> using Allocator = utils::STLAllocator<T, details::LinearAllocatorArena>;
+    template<typename T> using Vector = std::vector<T, Allocator<T>>; // 32 bytes
 
     auto& getArena() noexcept { return mArena; }
 
     fg::PassNode& createPass(const char* name, FrameGraphPassExecutor* base) noexcept;
-    fg::ResourceNode& createResource(const char* name,
+
+    fg::Resource* createResource(const char* name,
             FrameGraphResource::Descriptor const& desc, bool imported) noexcept;
+
     fg::ResourceNode& getResource(FrameGraphResource r);
 
     fg::RenderTarget& createRenderTarget(const char* name,
-            FrameGraphRenderTarget::Descriptor const& desc, bool imported) noexcept;
+            FrameGraphRenderTarget::Descriptor const& desc) noexcept;
+
+    FrameGraphResource createResourceNode(fg::Resource* resource) noexcept;
 
     enum class DiscardPhase { START, END };
-    uint8_t computeDiscardFlags(DiscardPhase phase,
+    backend::TargetBufferFlags computeDiscardFlags(DiscardPhase phase,
             fg::PassNode const* curr, fg::PassNode const* first,
             fg::RenderTarget const& renderTarget);
 

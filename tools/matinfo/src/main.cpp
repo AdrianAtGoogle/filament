@@ -16,17 +16,17 @@
 
 #include <getopt/getopt.h>
 
+#include <filaflat/BlobDictionary.h>
 #include <filaflat/ChunkContainer.h>
-#include <filaflat/FilaflatDefs.h>
-#include <filaflat/MaterialParser.h>
-#include <filaflat/Unflattener.h>
+#include <filaflat/DictionaryReader.h>
+#include <filaflat/MaterialChunk.h>
 #include <filaflat/ShaderBuilder.h>
+#include <filaflat/Unflattener.h>
 
-#include <filament/EngineEnums.h>
+#include <filament/MaterialChunkType.h>
 #include <filament/MaterialEnums.h>
-#include <private/filament/SamplerInterfaceBlock.h>
-#include <private/filament/UniformInterfaceBlock.h>
-#include <filament/driver/DriverEnums.h>
+
+#include <backend/DriverEnums.h>
 
 #include <utils/Path.h>
 
@@ -38,9 +38,79 @@
 #include <iostream>
 
 using namespace filaflat;
+using namespace filamat;
+using namespace filament;
+using namespace backend;
 using namespace utils;
 
 static const int alignment = 24;
+
+
+class MaterialParser {
+public:
+    MaterialParser(Backend backend, const void* data, size_t size)
+            : mChunkContainer(data, size), mMaterialChunk(mChunkContainer) {
+        switch (backend) {
+            case Backend::OPENGL:
+                mMaterialTag = ChunkType::MaterialGlsl;
+                mDictionaryTag = ChunkType::DictionaryGlsl;
+                break;
+            case Backend::METAL:
+                mMaterialTag = ChunkType::MaterialMetal;
+                mDictionaryTag = ChunkType::DictionaryMetal;
+                break;
+            case Backend::VULKAN:
+                mMaterialTag = ChunkType::MaterialSpirv;
+                mDictionaryTag = ChunkType::DictionarySpirv;
+                break;
+            default:
+                break;
+        }
+    }
+
+    bool parse() noexcept {
+        if (mChunkContainer.parse()) {
+            return mMaterialChunk.readIndex(mMaterialTag);
+        }
+        return false;
+    }
+
+    bool isShadingMaterial() const noexcept {
+        ChunkContainer const& cc = mChunkContainer;
+        return cc.hasChunk(MaterialName) && cc.hasChunk(MaterialVersion) &&
+               cc.hasChunk(MaterialUib) && cc.hasChunk(MaterialSib) &&
+               cc.hasChunk(MaterialShaderModels) && cc.hasChunk(mMaterialTag);
+    }
+
+    bool isPostProcessMaterial() const noexcept {
+        ChunkContainer const& cc = mChunkContainer;
+        return cc.hasChunk(PostProcessVersion)
+               && cc.hasChunk(mMaterialTag) && cc.hasChunk(mDictionaryTag);
+    }
+
+    bool getShader(ShaderModel shaderModel,
+            uint8_t variant, ShaderType stage, ShaderBuilder& shader) noexcept {
+
+        ChunkContainer const& cc = mChunkContainer;
+        if (!cc.hasChunk(mMaterialTag) || !cc.hasChunk(mDictionaryTag)) {
+            return false;
+        }
+
+        BlobDictionary blobDictionary;
+        if (!DictionaryReader::unflatten(cc, mDictionaryTag, blobDictionary)) {
+            return false;
+        }
+
+        return mMaterialChunk.getShader(shader,
+                blobDictionary, (uint8_t)shaderModel, variant, stage);
+    }
+
+private:
+    ChunkContainer mChunkContainer;
+    MaterialChunk mMaterialChunk;
+    ChunkType mMaterialTag = ChunkType::Unknown;
+    ChunkType mDictionaryTag = ChunkType::Unknown;
+};
 
 struct Config {
     bool printGLSL = false;
@@ -52,9 +122,9 @@ struct Config {
 };
 
 struct ShaderInfo {
-    filament::driver::ShaderModel shaderModel;
+    ShaderModel shaderModel;
     uint8_t variant;
-    filament::driver::ShaderType pipelineStage;
+    ShaderType pipelineStage;
     uint32_t offset;
 };
 
@@ -167,73 +237,74 @@ template<typename T>
 static const char* toString(T value);
 
 template<>
-const char* toString(filament::Shading shadingModel) {
+const char* toString(Shading shadingModel) {
     switch (shadingModel) {
-        case filament::Shading::UNLIT: return "unlit";
-        case filament::Shading::LIT: return "lit";
-        case filament::Shading::SUBSURFACE: return "subsurface";
-        case filament::Shading::CLOTH: return "cloth";
+        case Shading::UNLIT: return "unlit";
+        case Shading::LIT: return "lit";
+        case Shading::SUBSURFACE: return "subsurface";
+        case Shading::CLOTH: return "cloth";
+        case Shading::SPECULAR_GLOSSINESS: return "specularGlossiness";
     }
 }
 
 template<>
-const char* toString(filament::BlendingMode blendingMode) {
+const char* toString(BlendingMode blendingMode) {
     switch (blendingMode) {
-        case filament::BlendingMode::OPAQUE: return "opaque";
-        case filament::BlendingMode::TRANSPARENT: return "transparent";
-        case filament::BlendingMode::FADE: return "fade";
-        case filament::BlendingMode::ADD: return "add";
-        case filament::BlendingMode::MASKED: return "masked";
+        case BlendingMode::OPAQUE: return "opaque";
+        case BlendingMode::TRANSPARENT: return "transparent";
+        case BlendingMode::FADE: return "fade";
+        case BlendingMode::ADD: return "add";
+        case BlendingMode::MASKED: return "masked";
     }
 }
 
 template<>
-const char* toString(filament::Interpolation interpolation) {
+const char* toString(Interpolation interpolation) {
     switch (interpolation) {
-        case filament::Interpolation::SMOOTH: return "smooth";
-        case filament::Interpolation::FLAT: return "flat";
+        case Interpolation::SMOOTH: return "smooth";
+        case Interpolation::FLAT: return "flat";
     }
 }
 
 template<>
-const char* toString(filament::VertexDomain domain) {
+const char* toString(VertexDomain domain) {
     switch (domain) {
-        case filament::VertexDomain::OBJECT: return "object";
-        case filament::VertexDomain::WORLD: return "world";
-        case filament::VertexDomain::VIEW: return "view";
-        case filament::VertexDomain::DEVICE: return "device";
+        case VertexDomain::OBJECT: return "object";
+        case VertexDomain::WORLD: return "world";
+        case VertexDomain::VIEW: return "view";
+        case VertexDomain::DEVICE: return "device";
     }
 }
 
 template<>
-const char* toString(filament::driver::CullingMode cullingMode) {
+const char* toString(CullingMode cullingMode) {
     switch (cullingMode) {
-        case filament::driver::CullingMode::NONE: return "none";
-        case filament::driver::CullingMode::FRONT: return "front";
-        case filament::driver::CullingMode::BACK: return "back";
-        case filament::driver::CullingMode::FRONT_AND_BACK: return "front & back";
+        case CullingMode::NONE: return "none";
+        case CullingMode::FRONT: return "front";
+        case CullingMode::BACK: return "back";
+        case CullingMode::FRONT_AND_BACK: return "front & back";
     }
 }
 
 template<>
-const char* toString(filament::TransparencyMode transparencyMode) {
+const char* toString(TransparencyMode transparencyMode) {
     switch (transparencyMode) {
-        case filament::TransparencyMode::DEFAULT: return "default";
-        case filament::TransparencyMode::TWO_PASSES_ONE_SIDE: return "two passes, one side";
-        case filament::TransparencyMode::TWO_PASSES_TWO_SIDES: return "two passes, two sides";
+        case TransparencyMode::DEFAULT: return "default";
+        case TransparencyMode::TWO_PASSES_ONE_SIDE: return "two passes, one side";
+        case TransparencyMode::TWO_PASSES_TWO_SIDES: return "two passes, two sides";
     }
 }
 
 template<>
-const char* toString(filament::VertexAttribute attribute) {
+const char* toString(VertexAttribute attribute) {
     switch (attribute) {
-        case filament::POSITION: return "position";
-        case filament::TANGENTS: return "tangents";
-        case filament::COLOR: return "color";
-        case filament::UV0: return "uv0";
-        case filament::UV1: return "uv1";
-        case filament::BONE_INDICES: return "bone indices";
-        case filament::BONE_WEIGHTS: return "bone weights";
+        case VertexAttribute::POSITION: return "position";
+        case VertexAttribute::TANGENTS: return "tangents";
+        case VertexAttribute::COLOR: return "color";
+        case VertexAttribute::UV0: return "uv0";
+        case VertexAttribute::UV1: return "uv1";
+        case VertexAttribute::BONE_INDICES: return "bone indices";
+        case VertexAttribute::BONE_WEIGHTS: return "bone weights";
     }
     return "--";
 }
@@ -244,74 +315,74 @@ const char* toString(bool value) {
 }
 
 template<>
-const char* toString(filament::driver::ShaderType stage) {
+const char* toString(ShaderType stage) {
     switch (stage) {
-        case filament::driver::ShaderType::VERTEX: return "vs";
-        case filament::driver::ShaderType::FRAGMENT: return "fs";
+        case ShaderType::VERTEX: return "vs";
+        case ShaderType::FRAGMENT: return "fs";
         default: break;
     }
     return "--";
 }
 
 template<>
-const char* toString(filament::driver::ShaderModel model) {
+const char* toString(ShaderModel model) {
     switch (model) {
-        case filament::driver::ShaderModel::UNKNOWN: return "--";
-        case filament::driver::ShaderModel::GL_ES_30: return "gles30";
-        case filament::driver::ShaderModel::GL_CORE_41: return "gl41";
+        case ShaderModel::UNKNOWN: return "--";
+        case ShaderModel::GL_ES_30: return "gles30";
+        case ShaderModel::GL_CORE_41: return "gl41";
     }
 }
 
 template<>
-const char* toString(filament::UniformInterfaceBlock::Type type) {
+const char* toString(UniformType type) {
     switch (type) {
-        case filament::driver::UniformType::BOOL:   return "bool";
-        case filament::driver::UniformType::BOOL2:  return "bool2";
-        case filament::driver::UniformType::BOOL3:  return "bool3";
-        case filament::driver::UniformType::BOOL4:  return "bool4";
-        case filament::driver::UniformType::FLOAT:  return "float";
-        case filament::driver::UniformType::FLOAT2: return "float2";
-        case filament::driver::UniformType::FLOAT3: return "float3";
-        case filament::driver::UniformType::FLOAT4: return "float4";
-        case filament::driver::UniformType::INT:    return "int";
-        case filament::driver::UniformType::INT2:   return "int2";
-        case filament::driver::UniformType::INT3:   return "int3";
-        case filament::driver::UniformType::INT4:   return "int4";
-        case filament::driver::UniformType::UINT:   return "uint";
-        case filament::driver::UniformType::UINT2:  return "uint2";
-        case filament::driver::UniformType::UINT3:  return "uint3";
-        case filament::driver::UniformType::UINT4:  return "uint4";
-        case filament::driver::UniformType::MAT3:   return "float3x3";
-        case filament::driver::UniformType::MAT4:   return "float4x4";
+        case UniformType::BOOL:   return "bool";
+        case UniformType::BOOL2:  return "bool2";
+        case UniformType::BOOL3:  return "bool3";
+        case UniformType::BOOL4:  return "bool4";
+        case UniformType::FLOAT:  return "float";
+        case UniformType::FLOAT2: return "float2";
+        case UniformType::FLOAT3: return "float3";
+        case UniformType::FLOAT4: return "float4";
+        case UniformType::INT:    return "int";
+        case UniformType::INT2:   return "int2";
+        case UniformType::INT3:   return "int3";
+        case UniformType::INT4:   return "int4";
+        case UniformType::UINT:   return "uint";
+        case UniformType::UINT2:  return "uint2";
+        case UniformType::UINT3:  return "uint3";
+        case UniformType::UINT4:  return "uint4";
+        case UniformType::MAT3:   return "float3x3";
+        case UniformType::MAT4:   return "float4x4";
     }
 }
 
 template<>
-const char* toString(filament::SamplerInterfaceBlock::Type type) {
+const char* toString(SamplerType type) {
     switch (type) {
-        case filament::driver::SamplerType::SAMPLER_2D: return "sampler2D";
-        case filament::driver::SamplerType::SAMPLER_CUBEMAP: return "samplerCubemap";
-        case filament::driver::SamplerType::SAMPLER_EXTERNAL: return "samplerExternal";
+        case SamplerType::SAMPLER_2D: return "sampler2D";
+        case SamplerType::SAMPLER_CUBEMAP: return "samplerCubemap";
+        case SamplerType::SAMPLER_EXTERNAL: return "samplerExternal";
     }
 }
 
 template<>
-const char* toString(filament::SamplerInterfaceBlock::Precision precision) {
+const char* toString(Precision precision) {
     switch (precision) {
-        case filament::driver::Precision::LOW: return "lowp";
-        case filament::driver::Precision::MEDIUM: return "mediump";
-        case filament::driver::Precision::HIGH: return "highp";
-        case filament::driver::Precision::DEFAULT: return "default";
+        case Precision::LOW: return "lowp";
+        case Precision::MEDIUM: return "mediump";
+        case Precision::HIGH: return "highp";
+        case Precision::DEFAULT: return "default";
     }
 }
 
 template<>
-const char* toString(filament::SamplerInterfaceBlock::Format format) {
+const char* toString(SamplerFormat format) {
     switch (format) {
-        case filament::driver::SamplerFormat::INT: return "int";
-        case filament::driver::SamplerFormat::UINT: return "uint";
-        case filament::driver::SamplerFormat::FLOAT: return "float";
-        case filament::driver::SamplerFormat::SHADOW: return "shadow";
+        case SamplerFormat::INT: return "int";
+        case SamplerFormat::UINT: return "uint";
+        case SamplerFormat::FLOAT: return "float";
+        case SamplerFormat::SHADOW: return "shadow";
     }
 }
 
@@ -372,34 +443,35 @@ static bool printMaterial(const ChunkContainer& container) {
     std::cout << std::endl;
 
     std::cout << "Shading:" << std::endl;
-    printChunk<filament::Shading, uint8_t>(container, filamat::MaterialShading, "Model: ");
-    printChunk<filament::VertexDomain, uint8_t>(container, filamat::MaterialVertexDomain,
+    printChunk<Shading, uint8_t>(container, filamat::MaterialShading, "Model: ");
+    printChunk<VertexDomain, uint8_t>(container, filamat::MaterialVertexDomain,
             "Vertex domain: ");
-    printChunk<filament::Interpolation, uint8_t>(container, filamat::MaterialInterpolation,
+    printChunk<Interpolation, uint8_t>(container, filamat::MaterialInterpolation,
             "Interpolation: ");
     printChunk<bool, bool>(container, filamat::MaterialShadowMultiplier, "Shadow multiply: ");
     printChunk<bool, bool>(container, filamat::MaterialCurvatureToRoughness, "Curvature to roughness: ");
     printChunk<bool, bool>(container, filamat::MaterialLimitOverInterpolation, "Limit interpolation: ");
+    printChunk<bool, bool>(container, filamat::MaterialClearCoatIorChange, "Clear coat IOR change: ");
 
     std::cout << std::endl;
 
     std::cout << "Raster state:" << std::endl;
-    printChunk<filament::BlendingMode, uint8_t>(container, filamat::MaterialBlendingMode, "Blending: ");
+    printChunk<BlendingMode, uint8_t>(container, filamat::MaterialBlendingMode, "Blending: ");
     printFloatChunk(container, filamat::MaterialMaskThreshold, "Mask threshold: ");
     printChunk<bool, bool>(container, filamat::MaterialColorWrite, "Color write: ");
     printChunk<bool, bool>(container, filamat::MaterialDepthWrite, "Depth write: ");
     printChunk<bool, bool>(container, filamat::MaterialDepthTest, "Depth test: ");
     printChunk<bool, bool>(container, filamat::MaterialDoubleSided, "Double sided: ");
-    printChunk<filament::driver::CullingMode, uint8_t>(container, filamat::MaterialCullingMode,
+    printChunk<CullingMode, uint8_t>(container, filamat::MaterialCullingMode,
             "Culling: ");
-    printChunk<filament::TransparencyMode, uint8_t>(container, filamat::MaterialTransparencyMode,
+    printChunk<TransparencyMode, uint8_t>(container, filamat::MaterialTransparencyMode,
             "Transparency: ");
 
     std::cout << std::endl;
 
     uint32_t requiredAttributes;
     if (read(container, filamat::MaterialRequiredAttributes, &requiredAttributes)) {
-        filament::AttributeBitset bitset;
+        AttributeBitset bitset;
         bitset.setValue(requiredAttributes);
 
         if (bitset.count() > 0) {
@@ -407,7 +479,7 @@ static bool printMaterial(const ChunkContainer& container) {
             for (size_t i = 0; i < bitset.size(); i++) {
                 if (bitset.test(i)) {
                     std::cout << "    " <<
-                              toString(static_cast<filament::VertexAttribute>(i)) << std::endl;
+                              toString(static_cast<VertexAttribute>(i)) << std::endl;
                 }
             }
             std::cout << std::endl;
@@ -479,9 +551,9 @@ static bool printParametersInfo(ChunkContainer container) {
 
         std::cout << "    "
                   << std::setw(alignment) << fieldName.c_str()
-                  << std::setw(alignment) << toString(filament::UniformInterfaceBlock::Type(fieldType))
+                  << std::setw(alignment) << toString(UniformType(fieldType))
                   << arraySizeToString(fieldSize)
-                  << std::setw(10) << toString(filament::UniformInterfaceBlock::Precision(fieldPrecision))
+                  << std::setw(10) << toString(Precision(fieldPrecision))
                   << std::endl;
     }
 
@@ -513,15 +585,26 @@ static bool printParametersInfo(ChunkContainer container) {
 
         std::cout << "    "
                 << std::setw(alignment) << fieldName.c_str()
-                << std::setw(alignment) << toString(filament::SamplerInterfaceBlock::Type(fieldType))
-                << std::setw(10) << toString(filament::SamplerInterfaceBlock::Precision(fieldPrecision))
-                << toString(filament::SamplerInterfaceBlock::Format(fieldFormat))
+                << std::setw(alignment) << toString(SamplerType(fieldType))
+                << std::setw(10) << toString(Precision(fieldPrecision))
+                << toString(SamplerFormat(fieldFormat))
                 << std::endl;
     }
 
     std::cout << std::endl;
 
     return true;
+}
+
+// Unpack a 64 bit integer into a std::string
+inline utils::CString typeToString(uint64_t v) {
+    uint8_t* raw = (uint8_t*) &v;
+    char str[9];
+    for (size_t i = 0; i < 8; i++) {
+        str[7 - i] = raw[i];
+    }
+    str[8] = '\0';
+    return utils::CString(str, strnlen(str, 8));
 }
 
 static void printChunks(const ChunkContainer& container) {
@@ -578,9 +661,9 @@ static bool getMetalShaderInfo(ChunkContainer container, std::vector<ShaderInfo>
         }
 
         info->push_back({
-                .shaderModel = filament::driver::ShaderModel(shaderModelValue),
+                .shaderModel = ShaderModel(shaderModelValue),
                 .variant = variantValue,
-                .pipelineStage = filament::driver::ShaderType(pipelineStageValue),
+                .pipelineStage = ShaderType(pipelineStageValue),
                 .offset = offsetValue
         });
     }
@@ -628,9 +711,9 @@ static bool getGlShaderInfo(ChunkContainer container, std::vector<ShaderInfo>* i
         }
 
         info->push_back({
-            .shaderModel = filament::driver::ShaderModel(shaderModelValue),
+            .shaderModel = ShaderModel(shaderModelValue),
             .variant = variantValue,
-            .pipelineStage = filament::driver::ShaderType(pipelineStageValue),
+            .pipelineStage = ShaderType(pipelineStageValue),
             .offset = offsetValue
         });
     }
@@ -677,9 +760,9 @@ static bool getVkShaderInfo(ChunkContainer container, std::vector<ShaderInfo>* i
         }
 
         info->push_back({
-            .shaderModel = filament::driver::ShaderModel(shaderModelValue),
+            .shaderModel = ShaderModel(shaderModelValue),
             .variant = variantValue,
-            .pipelineStage = filament::driver::ShaderType(pipelineStageValue),
+            .pipelineStage = ShaderType(pipelineStageValue),
             .offset = dictionaryIndex
         });
     }
@@ -803,7 +886,7 @@ static bool parseChunks(Config config, void* data, size_t size) {
         std::vector<ShaderInfo> info;
 
         if (config.printGLSL) {
-            MaterialParser parser(filament::driver::Backend::OPENGL, data, size);
+            MaterialParser parser(Backend::OPENGL, data, size);
             if (!parser.parse() ||
                     (!parser.isShadingMaterial() && !parser.isPostProcessMaterial())) {
                 return false;
@@ -821,13 +904,15 @@ static bool parseChunks(Config config, void* data, size_t size) {
 
             const auto& item = info[config.shaderIndex];
             parser.getShader(item.shaderModel, item.variant, item.pipelineStage, builder);
-            std::cout << builder.c_str();
+
+            // Casted to char* to print as a string rather than hex value.
+            std::cout << (const char*) builder.data();
 
             return true;
         }
 
         if (config.printSPIRV) {
-            MaterialParser parser(filament::driver::Backend::VULKAN, data, size);
+            MaterialParser parser(Backend::VULKAN, data, size);
             if (!parser.parse() ||
                     (!parser.isShadingMaterial() && !parser.isPostProcessMaterial())) {
                 return false;
@@ -847,7 +932,7 @@ static bool parseChunks(Config config, void* data, size_t size) {
             parser.getShader(item.shaderModel, item.variant, item.pipelineStage, builder);
 
             // Build std::vector<uint32_t> since that's what the Khronos libraries consume.
-            uint32_t const* words = reinterpret_cast<uint32_t const*>(builder.c_str());
+            uint32_t const* words = reinterpret_cast<uint32_t const*>(builder.data());
             assert(0 == (builder.size() % 4));
             const std::vector<uint32_t> spirv(words, words + builder.size() / 4);
 
@@ -863,7 +948,7 @@ static bool parseChunks(Config config, void* data, size_t size) {
         }
 
         if (config.printMetal) {
-            MaterialParser parser(filament::driver::Backend::METAL, data, size);
+            MaterialParser parser(Backend::METAL, data, size);
             if (!parser.parse() ||
                     (!parser.isShadingMaterial() && !parser.isPostProcessMaterial())) {
                 return false;
@@ -881,7 +966,7 @@ static bool parseChunks(Config config, void* data, size_t size) {
 
             const auto& item = info[config.shaderIndex];
             parser.getShader(item.shaderModel, item.variant, item.pipelineStage, builder);
-            std::cout << builder.getShader().c_str();
+            std::cout << (const char*) builder.data();
 
             return true;
         }

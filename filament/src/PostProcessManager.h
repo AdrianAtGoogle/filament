@@ -17,24 +17,19 @@
 #ifndef TNT_FILAMENT_POSTPROCESS_MANAGER_H
 #define TNT_FILAMENT_POSTPROCESS_MANAGER_H
 
-#include "RenderTargetPool.h"
-
 #include "UniformBuffer.h"
+
+#include "private/backend/DriverApiForward.h"
 
 #include "fg/FrameGraphResource.h"
 
-#include "driver/DriverApiForward.h"
-#include "driver/Handle.h"
-
-#include <filament/Viewport.h>
-
-#include <filament/driver/DriverEnums.h>
-
-#include <vector>
+#include <backend/DriverEnums.h>
 
 namespace filament {
 
 namespace details {
+class FMaterial;
+class FMaterialInstance;
 class FEngine;
 class FView;
 } // namespace details
@@ -42,57 +37,45 @@ class FView;
 class PostProcessManager {
 public:
     void init(details::FEngine& engine) noexcept;
-    void terminate(driver::DriverApi& driver) noexcept;
-    void setSource(uint32_t viewportWidth, uint32_t viewportHeight, Handle <HwTexture> texture,
+    void terminate(backend::DriverApi& driver) noexcept;
+    void setSource(uint32_t viewportWidth, uint32_t viewportHeight,
+            backend::Handle<backend::HwTexture> color,
+            backend::Handle<backend::HwTexture> depth,
             uint32_t textureWidth, uint32_t textureHeight) const noexcept;
 
-    // start() is a scam, it does nothing
-    void start() noexcept { }
-
-    // a fullscreen pass, using the given format as target and writing into the specified program
-    void pass(driver::TextureFormat format, Handle<HwProgram> program) noexcept;
-
-    // a blit pass, using the given format as target
-    void blit(driver::TextureFormat format = driver::TextureFormat::RGBA8) noexcept;
-
-    void finish(driver::TargetBufferFlags discarded,
-            Handle<HwRenderTarget> viewRenderTarget,
-            Viewport const& vp,
-            RenderTargetPool::Target const* linearTarget,
-            Viewport const& svp);
-
-
-    FrameGraphResource msaa(
-            FrameGraph& fg, FrameGraphResource input,
-            driver::TextureFormat outFormat) noexcept;
-
-    FrameGraphResource toneMapping(
-            FrameGraph& fg, FrameGraphResource input, driver::TextureFormat outFormat,
-            bool translucent) noexcept;
+    FrameGraphResource toneMapping(FrameGraph& fg, FrameGraphResource input,
+            backend::TextureFormat outFormat, bool dithering, bool translucent) noexcept;
 
     FrameGraphResource fxaa(
-            FrameGraph& fg, FrameGraphResource input, driver::TextureFormat outFormat,
+            FrameGraph& fg, FrameGraphResource input, backend::TextureFormat outFormat,
             bool translucent) noexcept;
 
     FrameGraphResource dynamicScaling(
-            FrameGraph& fg, FrameGraphResource input,
-            driver::TextureFormat outFormat, Viewport const& outViewport) noexcept;
+            FrameGraph& fg, FrameGraphResource input, backend::TextureFormat outFormat) noexcept;
 
+    FrameGraphResource resolve(
+            FrameGraph& fg, FrameGraphResource input) noexcept;
+
+
+    FrameGraphResource ssao(FrameGraph& fg, FrameGraphResource depth) noexcept;
+
+    backend::Handle<backend::HwTexture> getNoSSAOTexture() const {
+        return mNoSSAOTexture;
+    }
 
 private:
     details::FEngine* mEngine = nullptr;
 
-    struct Command {
-        Handle<HwProgram> program = {};
-        driver::TextureFormat format;
-    };
-
-    std::vector<Command> mCommands;
-
     // we need only one of these
     mutable UniformBuffer mPostProcessUb;
-    Handle<HwSamplerBuffer> mPostProcessSbh;
-    Handle<HwUniformBuffer> mPostProcessUbh;
+    backend::Handle<backend::HwSamplerGroup> mPostProcessSbh;
+    backend::Handle<backend::HwUniformBuffer> mPostProcessUbh;
+
+    details::FMaterial* mSSAOMaterial = nullptr;
+    details::FMaterialInstance* mSSAOMaterialInstance = nullptr;
+    backend::Handle<backend::HwProgram> mSSAOProgram;
+
+    backend::Handle<backend::HwTexture> mNoSSAOTexture;
 };
 
 } // namespace filament

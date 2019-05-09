@@ -11,9 +11,6 @@ set(MATERIAL_DIR  "${GENERATION_ROOT}/generated/material")
 # Sources and headers
 # ==================================================================================================
 set(PUBLIC_HDRS
-        include/filament/driver/BufferDescriptor.h
-        include/filament/driver/Platform.h
-        include/filament/driver/PixelBufferDescriptor.h
         include/filament/Box.h
         include/filament/Camera.h
         include/filament/Color.h
@@ -47,24 +44,6 @@ set(SRCS
         src/components/RenderableManager.cpp
         src/components/TransformManager.cpp
         src/fg/FrameGraph.cpp
-        src/driver/noop/NoopDriver.cpp
-        src/driver/noop/PlatformNoop.cpp
-        src/driver/opengl/gl_headers.cpp
-        src/driver/opengl/OpenGLBlitter.cpp
-        src/driver/opengl/GLUtils.cpp
-        src/driver/opengl/OpenGLDriver.cpp
-        src/driver/opengl/OpenGLProgram.cpp
-        src/driver/CommandStream.cpp
-        src/driver/CommandBufferQueue.cpp
-        src/driver/CircularBuffer.cpp
-        src/driver/Driver.cpp
-        src/driver/DriverAPI.inc
-        src/driver/Platform.cpp
-        src/driver/GPUBuffer.cpp
-        src/driver/Handle.cpp
-        src/driver/Program.cpp
-        src/driver/SamplerBuffer.cpp
-        src/driver/TextureReshaper.cpp
         src/Box.cpp
         src/Camera.cpp
         src/Color.cpp
@@ -79,15 +58,16 @@ set(SRCS
         src/FrameSkipper.cpp
         src/Froxelizer.cpp
         src/Frustum.cpp
+        src/GPUBuffer.cpp
         src/IndexBuffer.cpp
         src/IndirectLight.cpp
         src/Material.cpp
+        src/MaterialParser.cpp
         src/MaterialInstance.cpp
         src/PostProcessManager.cpp
         src/Renderer.cpp
         src/RenderPass.cpp
         src/RenderPrimitive.cpp
-        src/RenderTargetPool.cpp
         src/Scene.cpp
         src/ShadowMap.cpp
         src/Skybox.cpp
@@ -132,27 +112,13 @@ set(PRIVATE_HDRS
         src/details/Texture.h
         src/details/VertexBuffer.h
         src/details/View.h
-        src/driver/CircularBuffer.h
-        src/driver/CommandBufferQueue.h
-        src/driver/CommandStream.h
-        src/driver/CommandStreamDispatcher.h
-        src/driver/DataReshaper.h
-        src/driver/TextureReshaper.h
-        src/driver/Driver.h
-        src/driver/DriverAPI.inc
-        src/driver/DriverApi.h
-        src/driver/DriverApiForward.h
-        src/driver/DriverBase.h
-        src/driver/GPUBuffer.h
-        src/driver/Handle.h
-        src/driver/Program.h
-        src/driver/SamplerBuffer.h
         src/FilamentAPI-impl.h
         src/FrameInfo.h
+        src/GPUBuffer.h
         src/Intersections.h
+        src/MaterialParser.h
         src/PostProcessManager.h
         src/RenderPass.h
-        src/RenderTargetPool.h
         src/UniformBuffer.h
         src/upcast.h)
 
@@ -160,6 +126,7 @@ set(MATERIAL_SRCS
         src/materials/defaultMaterial.mat
         src/materials/skybox.mat
         src/materials/skyboxRGBM.mat
+        src/materials/ssao.mat
 )
 
 # Embed the binary resource blob for materials.
@@ -168,78 +135,10 @@ list(APPEND PRIVATE_HDRS ${RESGEN_HEADER})
 list(APPEND SRCS ${RESGEN_SOURCE})
 
 # ==================================================================================================
-# OS specific
-# ==================================================================================================
-
-# Here set the architecture specific sources
-if (USE_EXTERNAL_GLES3)
-    # Experimental feature; clients provide their own Context Manager.
-elseif (ANDROID)
-    list(APPEND SRCS src/driver/android/ExternalStreamManagerAndroid.cpp)
-    list(APPEND SRCS src/driver/android/ExternalTextureManagerAndroid.cpp)
-    list(APPEND SRCS src/driver/android/VirtualMachineEnv.cpp)
-    list(APPEND SRCS src/driver/opengl/PlatformEGL.cpp)
-elseif (IOS)
-    list(APPEND SRCS src/driver/opengl/PlatformCocoaTouchGL.mm)
-elseif (APPLE)
-    list(APPEND SRCS src/driver/opengl/PlatformCocoaGL.mm)
-elseif (WEBGL)
-    list(APPEND SRCS src/driver/opengl/PlatformWebGL.cpp)
-elseif (LINUX)
-    list(APPEND SRCS src/driver/opengl/PlatformGLX.cpp)
-elseif (WIN32)
-    list(APPEND SRCS src/driver/opengl/PlatformWGL.cpp)
-else()
-    list(APPEND SRCS src/driver/opengl/PlatformDummyGL.cpp)
-endif()
-
-# ==================================================================================================
 # Definitions
 # ==================================================================================================
 # "2" corresponds to SYSTRACE_TAG_FILEMENT (See: utils/Systrace.h)
 add_definitions(-DSYSTRACE_TAG=2 )
-
-# ==================================================================================================
-# Metal Sources
-# ==================================================================================================
-
-if (FILAMENT_SUPPORTS_METAL)
-    list(APPEND SRCS
-            src/driver/metal/MetalDriver.mm
-            src/driver/metal/MetalHandles.mm
-            src/driver/metal/MetalState.mm
-            src/driver/metal/PlatformMetal.mm
-    )
-endif()
-
-# ==================================================================================================
-# Vulkan Sources
-# ==================================================================================================
-
-# See root CMakeLists.txt for platforms that support Vulkan
-if (FILAMENT_SUPPORTS_VULKAN)
-    list(APPEND SRCS
-            src/driver/vulkan/VulkanBinder.cpp
-            src/driver/vulkan/VulkanBuffer.cpp
-            src/driver/vulkan/VulkanDriver.cpp
-            src/driver/vulkan/VulkanDriverImpl.cpp
-            src/driver/vulkan/VulkanFboCache.cpp
-            src/driver/vulkan/VulkanHandles.cpp
-            src/driver/vulkan/VulkanSamplerCache.cpp
-            src/driver/vulkan/VulkanStagePool.cpp
-    )
-    if (LINUX)
-        list(APPEND SRCS src/driver/vulkan/PlatformVkLinux.cpp)
-    elseif (APPLE AND NOT IOS)
-        list(APPEND SRCS src/driver/vulkan/PlatformVkCocoa.mm)
-    elseif (IOS)
-        list(APPEND SRCS src/driver/vulkan/PlatformVkCocoaTouch.mm)
-    elseif (ANDROID)
-        list(APPEND SRCS src/driver/vulkan/PlatformVkAndroid.cpp)
-    elseif (WIN32)
-        list(APPEND SRCS src/driver/vulkan/PlatformVkWindows.cpp)
-    endif()
-endif()
 
 # ==================================================================================================
 # Generate all .filamat: default material, skyboxes, and post-process
@@ -345,8 +244,10 @@ if (APPLE AND NOT IOS)
     target_link_libraries(${TARGET} PRIVATE "-framework Cocoa")
 endif()
 
+target_link_libraries(${TARGET} PUBLIC backend)
 target_link_libraries(${TARGET} PUBLIC math)
 target_link_libraries(${TARGET} PUBLIC utils)
+target_link_libraries(${TARGET} PUBLIC geometry) # TODO: remove this dependency after deprecating VertexBuffer::populateTangentQuaternions
 target_link_libraries(${TARGET} PUBLIC filaflat)
 target_link_libraries(${TARGET} PUBLIC filabridge)
 target_link_libraries(${TARGET} PUBLIC image_headers)
@@ -361,7 +262,7 @@ if (FILAMENT_SUPPORTS_VULKAN)
 endif()
 
 if (FILAMENT_SUPPORTS_METAL)
-    target_link_libraries(${TARGET} PUBLIC "-framework Metal")
+    target_link_libraries(${TARGET} PUBLIC "-framework Metal -framework CoreVideo")
 endif()
 
 if (LINUX)
@@ -436,5 +337,7 @@ install(FILES "README.md" DESTINATION .)
 # ==================================================================================================
 # Sub-projects
 # ==================================================================================================
+add_subdirectory(backend)
 add_subdirectory(test)
 add_subdirectory(benchmark)
+add_subdirectory(tools)

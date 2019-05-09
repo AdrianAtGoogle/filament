@@ -18,12 +18,12 @@
 
 #include "private/filament/UniformInterfaceBlock.h"
 
-#include <filament/EngineEnums.h>
-#include <filament/driver/DriverEnums.h>
+#include <private/filament/EngineEnums.h>
+#include <backend/DriverEnums.h>
 
 namespace filament {
 
-using namespace driver;
+using namespace backend;
 
 static_assert(sizeof(PerRenderableUib) % 256 == 0,
         "sizeof(Transform) should be a multiple of 256");
@@ -97,9 +97,10 @@ UniformInterfaceBlock const& UibGenerator::getLightsUib() noexcept {
 UniformInterfaceBlock const& UibGenerator::getPostProcessingUib() noexcept {
     static UniformInterfaceBlock uib =  UniformInterfaceBlock::Builder()
             .name("PostProcessUniforms")
-            .add("uvScale", 1, UniformInterfaceBlock::Type::FLOAT2)
-            .add("time",    1, UniformInterfaceBlock::Type::FLOAT)
-            .add("yOffset", 1, UniformInterfaceBlock::Type::FLOAT)
+            .add("uvScale",   1, UniformInterfaceBlock::Type::FLOAT2)
+            .add("time",      1, UniformInterfaceBlock::Type::FLOAT)
+            .add("yOffset",   1, UniformInterfaceBlock::Type::FLOAT)
+            .add("dithering", 1, UniformInterfaceBlock::Type::INT)
             .build();
     return uib;
 }

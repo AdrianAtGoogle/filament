@@ -51,6 +51,14 @@
 #include <filament/VertexBuffer.h>
 #include <filament/View.h>
 
+#include <geometry/SurfaceOrientation.h>
+
+#include <gltfio/Animator.h>
+#include <gltfio/AssetLoader.h>
+#include <gltfio/FilamentAsset.h>
+#include <gltfio/MaterialProvider.h>
+#include <gltfio/ResourceLoader.h>
+
 #include <image/KtxBundle.h>
 #include <image/KtxUtility.h>
 
@@ -60,6 +68,7 @@
 #include <math/mat4.h>
 
 #include <utils/EntityManager.h>
+#include <utils/Log.h>
 
 #include <emscripten.h>
 #include <emscripten/bind.h>
@@ -72,6 +81,8 @@
 using namespace emscripten;
 using namespace filament;
 using namespace filamesh;
+using namespace geometry;
+using namespace gltfio;
 using namespace image;
 
 // Many methods require a thin layer of C++ glue which is elegantly expressed with a lambda.
@@ -88,24 +99,27 @@ using namespace image;
 #define BIND(T) template<> void raw_destructor<T>(T* ptr) {}
 namespace emscripten {
     namespace internal {
-        BIND(Engine)
-        BIND(SwapChain)
-        BIND(Renderer)
-        BIND(View)
-        BIND(Scene)
+        BIND(Animator)
+        BIND(AssetLoader)
         BIND(Camera)
-        BIND(LightManager)
-        BIND(RenderableManager)
-        BIND(TransformManager)
-        BIND(VertexBuffer)
+        BIND(Engine)
+        BIND(FilamentAsset)
         BIND(IndexBuffer)
         BIND(IndirectLight)
+        BIND(LightManager)
         BIND(Material)
         BIND(MaterialInstance)
+        BIND(RenderableManager)
+        BIND(Renderer)
+        BIND(Scene)
         BIND(Skybox)
+        BIND(SwapChain)
         BIND(Texture)
+        BIND(TransformManager)
         BIND(utils::Entity)
         BIND(utils::EntityManager)
+        BIND(VertexBuffer)
+        BIND(View)
     }
 }
 #undef BIND
@@ -122,8 +136,9 @@ using TexBuilder = Texture::Builder;
 using LightBuilder = LightManager::Builder;
 using IblBuilder = IndirectLight::Builder;
 using SkyBuilder = Skybox::Builder;
+using SurfaceBuilder = SurfaceOrientation::Builder;
 
-// We avoid directly exposing driver::BufferDescriptor because embind does not support move
+// We avoid directly exposing backend::BufferDescriptor because embind does not support move
 // semantics and void* doesn't make sense to JavaScript anyway. This little wrapper class is exposed
 // to JavaScript as "driver$BufferDescriptor", but clients will normally use our "Filament.Buffer"
 // helper function (implemented in utilities.js)
@@ -132,12 +147,12 @@ struct BufferDescriptor {
     // This form is used when JavaScript sends a buffer into WASM.
     BufferDescriptor(val arrdata) {
         auto byteLength = arrdata["byteLength"].as<uint32_t>();
-        this->bd.reset(new driver::BufferDescriptor(malloc(byteLength), byteLength,
+        this->bd.reset(new backend::BufferDescriptor(malloc(byteLength), byteLength,
                 [](void* buffer, size_t size, void* user) { free(buffer); }));
     }
     // This form is used when WASM needs to return a buffer to JavaScript.
     BufferDescriptor(uint8_t* data, uint32_t size) {
-        this->bd.reset(new driver::BufferDescriptor(data, size));
+        this->bd.reset(new backend::BufferDescriptor(data, size));
     }
     val getBytes() {
         unsigned char *byteBuffer = (unsigned char*) bd->buffer;
@@ -146,26 +161,26 @@ struct BufferDescriptor {
     }
     // In order to match its JavaScript counterpart, the Buffer wrapper needs to use reference
     // counting, and the easiest way to achieve that is with shared_ptr.
-    std::shared_ptr<driver::BufferDescriptor> bd;
+    std::shared_ptr<backend::BufferDescriptor> bd;
 };
 
 // Exposed to JavaScript as "driver$PixelBufferDescriptor", but clients will normally use the
 // PixelBuffer or CompressedPixelBuffer helper functions (implemented in utilities.js)
 struct PixelBufferDescriptor {
-    PixelBufferDescriptor(val arrdata, driver::PixelDataFormat fmt, driver::PixelDataType dtype) {
+    PixelBufferDescriptor(val arrdata, backend::PixelDataFormat fmt, backend::PixelDataType dtype) {
         auto byteLength = arrdata["byteLength"].as<uint32_t>();
-        this->pbd.reset(new driver::PixelBufferDescriptor(malloc(byteLength), byteLength,
+        this->pbd.reset(new backend::PixelBufferDescriptor(malloc(byteLength), byteLength,
                 fmt, dtype, [](void* buffer, size_t size, void* user) { free(buffer); }));
     }
     // Note that embind allows overloading based on number of arguments, but not on types.
     // It's fine to have two constructors but they can't both have the same number of arguments.
-    PixelBufferDescriptor(val arrdata, driver::CompressedPixelDataType cdtype, int imageSize,
+    PixelBufferDescriptor(val arrdata, backend::CompressedPixelDataType cdtype, int imageSize,
             bool compressed) {
         auto byteLength = arrdata["byteLength"].as<uint32_t>();
         assert(compressed == true);
         // For compressed cubemaps, the image size should be one-sixth the size of the entire blob.
         assert(imageSize == byteLength || imageSize == byteLength / 6);
-        this->pbd.reset(new driver::PixelBufferDescriptor(malloc(byteLength), byteLength,
+        this->pbd.reset(new backend::PixelBufferDescriptor(malloc(byteLength), byteLength,
                 cdtype, imageSize, [](void* buffer, size_t size, void* user) { free(buffer); }));
     }
     val getBytes() {
@@ -175,7 +190,7 @@ struct PixelBufferDescriptor {
     };
     // In order to match its JavaScript counterpart, the Buffer wrapper needs to use reference
     // counting, and the easiest way to achieve that is with shared_ptr.
-    std::shared_ptr<driver::PixelBufferDescriptor> pbd;
+    std::shared_ptr<backend::PixelBufferDescriptor> pbd;
 };
 
 // Small structure whose sole purpose is to return decoded image data to JavaScript.
@@ -444,6 +459,13 @@ class_<View>("View")
 /// See also the [Engine] methods `createScene` and `destroyScene`.
 class_<Scene>("Scene")
     .function("addEntity", &Scene::addEntity)
+
+    .function("addEntities", EMBIND_LAMBDA(void,
+            (Scene* self, std::vector<utils::Entity> entities), {
+        self->addEntities(entities.data(), entities.size());
+    }), allow_raw_pointers())
+
+    .function("hasEntity", &Scene::hasEntity)
     .function("remove", &Scene::remove)
     .function("setSkybox", &Scene::setSkybox, allow_raw_pointers())
     .function("setIndirectLight", &Scene::setIndirectLight, allow_raw_pointers())
@@ -484,7 +506,11 @@ class_<Camera>("Camera")
     }), allow_raw_pointers())
 
     .function("setLensProjection", &Camera::setLensProjection)
-    .function("setCustomProjection", &Camera::setCustomProjection)
+
+    .function("setCustomProjection", EMBIND_LAMBDA(void, (Camera* self,
+            flatmat4 m, double near, double far), {
+        self->setCustomProjection(filament::math::mat4(m.m), near, far);
+    }), allow_raw_pointers())
 
     .function("getProjectionMatrix", EMBIND_LAMBDA(flatmat4, (Camera* self), {
         return flatmat4 { filament::math::mat4f(self->getProjectionMatrix()) };
@@ -669,9 +695,21 @@ class_<TransformManager>("TransformManager")
     /// ::retval:: a transform component that can be passed to `setTransform`.
     .function("getInstance", &TransformManager::getInstance)
 
-    .function("create", &TransformManager::create)
+    .function("create", EMBIND_LAMBDA(void,
+            (TransformManager* self, utils::Entity entity), {
+        self->create(entity);
+    }), allow_raw_pointers())
+
     .function("destroy", &TransformManager::destroy)
     .function("setParent", &TransformManager::setParent)
+    .function("getParent", &TransformManager::getParent)
+
+    .function("getChidren", EMBIND_LAMBDA(std::vector<utils::Entity>,
+            (TransformManager* self, TransformManager::Instance instance), {
+        std::vector<utils::Entity> result(self->getChildCount(instance));
+        self->getChildren(instance, result.data(), result.size());
+        return result;
+    }), allow_raw_pointers())
 
     /// setTransform ::method:: Sets the mat4 value of a transform component.
     /// instance ::argument:: The transform instance of entity, obtained via `getInstance`.
@@ -738,7 +776,7 @@ class_<VertexBuilder>("VertexBuffer$Builder")
             VertexAttribute attr,
             uint8_t bufferIndex,
             VertexBuffer::AttributeType attrType,
-            uint8_t byteOffset,
+            uint32_t byteOffset,
             uint8_t byteStride), {
         return &builder->attribute(attr, bufferIndex, attrType, byteOffset, byteStride); })
     .BUILDER_FUNCTION("vertexCount", VertexBuilder, (VertexBuilder* builder, int count), {
@@ -803,10 +841,12 @@ class_<MaterialInstance>("MaterialInstance")
     .function("setColorParameter", EMBIND_LAMBDA(void,
             (MaterialInstance* self, std::string name, RgbType type, filament::math::float3 value), {
         self->setParameter(name.c_str(), type, value); }), allow_raw_pointers())
-    .function("setPolygonOffset", &MaterialInstance::setPolygonOffset);
+    .function("setPolygonOffset", &MaterialInstance::setPolygonOffset)
+    .function("setMaskThreshold", &MaterialInstance::setMaskThreshold)
+    .function("setDoubleSided", &MaterialInstance::setDoubleSided);
 
 class_<TextureSampler>("TextureSampler")
-    .constructor<driver::SamplerMinFilter, driver::SamplerMagFilter, driver::SamplerWrapMode>();
+    .constructor<backend::SamplerMinFilter, backend::SamplerMagFilter, backend::SamplerWrapMode>();
 
 /// Texture ::core class:: 2D image or cubemap that can be sampled by the GPU, possibly mipmapped.
 class_<Texture>("Texture")
@@ -921,8 +961,8 @@ class_<BufferDescriptor>("driver$BufferDescriptor")
 /// PixelBufferDescriptor ::class:: Low level pixel buffer wrapper.
 /// Clients should use the [PixelBuffer] helper function to contruct PixelBufferDescriptor objects.
 class_<PixelBufferDescriptor>("driver$PixelBufferDescriptor")
-    .constructor<emscripten::val, driver::PixelDataFormat, driver::PixelDataType>()
-    .constructor<emscripten::val, driver::CompressedPixelDataType, int, bool>()
+    .constructor<emscripten::val, backend::PixelDataFormat, backend::PixelDataType>()
+    .constructor<emscripten::val, backend::CompressedPixelDataType, int, bool>()
     /// getBytes ::method:: Gets a view of the WASM heap referenced by the buffer descriptor.
     /// ::retval:: Uint8Array
     .function("getBytes", &PixelBufferDescriptor::getBytes);
@@ -969,7 +1009,7 @@ class_<KtxBundle>("KtxBundle")
     /// ::retval:: [PixelDataFormat]
     /// Returns "undefined" if no valid Filament enumerant exists.
     .function("getPixelDataFormat",
-            EMBIND_LAMBDA(driver::PixelDataFormat, (KtxBundle* self, bool rgbm), {
+            EMBIND_LAMBDA(backend::PixelDataFormat, (KtxBundle* self, bool rgbm), {
         return KtxUtility::toPixelDataFormat(self->getInfo(), rgbm);
     }), allow_raw_pointers())
 
@@ -977,7 +1017,7 @@ class_<KtxBundle>("KtxBundle")
     /// ::retval:: [PixelDataType]
     /// Returns "undefined" if no valid Filament enumerant exists.
     .function("getPixelDataType",
-            EMBIND_LAMBDA(driver::PixelDataType, (KtxBundle* self), {
+            EMBIND_LAMBDA(backend::PixelDataType, (KtxBundle* self), {
         return KtxUtility::toPixelDataType(self->getInfo());
     }), allow_raw_pointers())
 
@@ -985,7 +1025,7 @@ class_<KtxBundle>("KtxBundle")
     /// ::retval:: [CompressedPixelDataType]
     /// Returns "undefined" if no valid Filament enumerant exists.
     .function("getCompressedPixelDataType",
-            EMBIND_LAMBDA(driver::CompressedPixelDataType, (KtxBundle* self), {
+            EMBIND_LAMBDA(backend::CompressedPixelDataType, (KtxBundle* self), {
         return KtxUtility::toCompressedPixelDataType(self->getInfo());
     }), allow_raw_pointers())
 
@@ -1043,16 +1083,30 @@ class_<KtxInfo>("KtxInfo")
     .property("pixelDepth", &KtxInfo::pixelDepth);
 
 register_vector<std::string>("RegistryKeys");
+register_vector<utils::Entity>("EntityVector");
 
 class_<MeshReader::MaterialRegistry>("MeshReader$MaterialRegistry")
     .constructor<>()
-    .function("size", &MeshReader::MaterialRegistry::size)
-    .function("get", internal::MapAccess<MeshReader::MaterialRegistry>::get)
-    .function("set", internal::MapAccess<MeshReader::MaterialRegistry>::set)
+    .function("size", &MeshReader::MaterialRegistry::numRegistered)
+    .function("get", EMBIND_LAMBDA(val, (MeshReader::MaterialRegistry* self, std::string k), {
+          const utils::CString name(k.c_str(), k.size());
+          auto i = self->getMaterialInstance(name);
+          if (i == nullptr) {
+              return val::undefined();
+          } else {
+              return val(i);
+          }
+    }), allow_raw_pointers())
+    .function("set", EMBIND_LAMBDA(void, (MeshReader::MaterialRegistry* self, std::string k, filament::MaterialInstance* v), {
+          const utils::CString name(k.c_str(), k.size());
+          self->registerMaterialInstance(name, v);
+    }), allow_raw_pointers())
     .function("keys", EMBIND_LAMBDA(std::vector<std::string>, (MeshReader::MaterialRegistry* self), {
-        std::vector<std::string> result;
-        for (const auto& pair : *self) {
-            result.emplace_back(pair.first);
+        std::vector<utils::CString> names(self->numRegistered());
+        self->getRegisteredMaterialNames(names.data());
+        std::vector<std::string> result(self->numRegistered());
+        for (const auto& name : names) {
+            result.emplace_back(name.c_str());
         }
         return result;
     }), allow_raw_pointers());
@@ -1106,5 +1160,158 @@ class_<DecodedPng>("DecodedPng")
     .property("width", &DecodedPng::width)
     .property("height", &DecodedPng::height)
     .property("data", &DecodedPng::decoded_data);
+
+class_<SurfaceBuilder>("SurfaceOrientation$Builder")
+
+    .constructor<>()
+
+    .BUILDER_FUNCTION("vertexCount", SurfaceBuilder, (SurfaceBuilder* builder, size_t nverts), {
+        return &builder->vertexCount(nverts);
+    })
+
+    .BUILDER_FUNCTION("normals", SurfaceBuilder, (SurfaceBuilder* builder,
+            intptr_t data, int stride), {
+        return &builder->normals((const filament::math::float3*) data, stride);
+    })
+
+    .BUILDER_FUNCTION("tangents", SurfaceBuilder, (SurfaceBuilder* builder,
+            intptr_t data, int stride), {
+        return &builder->tangents((const filament::math::float4*) data, stride);
+    })
+
+    .BUILDER_FUNCTION("uvs", SurfaceBuilder, (SurfaceBuilder* builder, intptr_t data, int stride), {
+        return &builder->uvs((const filament::math::float2*) data, stride);
+    })
+
+    .BUILDER_FUNCTION("positions", SurfaceBuilder, (SurfaceBuilder* builder,
+            intptr_t data, int stride), {
+        return &builder->positions((const filament::math::float3*) data, stride);
+    })
+
+    .BUILDER_FUNCTION("triangleCount", SurfaceBuilder, (SurfaceBuilder* builder, size_t n), {
+        return &builder->triangleCount(n);
+    })
+
+    .BUILDER_FUNCTION("triangles16", SurfaceBuilder, (SurfaceBuilder* builder, intptr_t data), {
+        return &builder->triangles((filament::math::ushort3*) data);
+    })
+
+    .BUILDER_FUNCTION("triangles32", SurfaceBuilder, (SurfaceBuilder* builder, intptr_t data), {
+        return &builder->triangles((filament::math::uint3*) data);
+    })
+
+    .function("_build", EMBIND_LAMBDA(SurfaceOrientation*, (SurfaceBuilder* builder), {
+        return new SurfaceOrientation(builder->build());
+    }), allow_raw_pointers());
+
+class_<SurfaceOrientation>("SurfaceOrientation")
+    .function("getQuats", EMBIND_LAMBDA(void, (SurfaceOrientation* self,
+            intptr_t out, size_t quatCount, VertexBuffer::AttributeType attrtype), {
+        switch (attrtype) {
+            case VertexBuffer::AttributeType::FLOAT4: {
+                self->getQuats((filament::math::quatf*) out, quatCount);
+                break;
+            }
+            case VertexBuffer::AttributeType::HALF4: {
+                self->getQuats((filament::math::quath*) out, quatCount);
+                break;
+            }
+            case VertexBuffer::AttributeType::SHORT4: {
+                self->getQuats((filament::math::short4*) out, quatCount);
+                break;
+            }
+            default:
+                utils::slog.e << "Unsupported quaternion type." << utils::io::endl;
+        }
+    }), allow_raw_pointers());
+
+class_<Animator>("gltfio$Animator")
+    .function("applyAnimation", &Animator::applyAnimation)
+    .function("updateBoneMatrices", &Animator::updateBoneMatrices)
+    .function("getAnimationCount", &Animator::getAnimationCount)
+    .function("getAnimationDuration", &Animator::getAnimationDuration)
+    .function("getAnimationName", EMBIND_LAMBDA(std::string, (Animator* self, size_t index), {
+        return std::string(self->getAnimationName(index));
+    }), allow_raw_pointers());
+
+class_<FilamentAsset>("gltfio$FilamentAsset")
+    .function("getEntities", EMBIND_LAMBDA(std::vector<utils::Entity>, (FilamentAsset* self), {
+        const utils::Entity* ptr = self->getEntities();
+        return std::vector<utils::Entity>(ptr, ptr + self->getEntityCount());
+    }), allow_raw_pointers())
+
+    .function("getRoot", &FilamentAsset::getRoot)
+
+    .function("getMaterialInstances", EMBIND_LAMBDA(std::vector<const MaterialInstance*>,
+            (FilamentAsset* self), {
+        const filament::MaterialInstance* const* ptr = self->getMaterialInstances();
+        return std::vector<const MaterialInstance*>(ptr, ptr + self->getMaterialInstanceCount());
+    }), allow_raw_pointers())
+
+    .function("getResourceUrls", EMBIND_LAMBDA(std::vector<std::string>, (FilamentAsset* self), {
+        std::vector<std::string> retval;
+        const BufferBinding* bbinding = self->getBufferBindings();
+        for (size_t i = 0, len = self->getBufferBindingCount(); i < len; ++i, ++bbinding) {
+            retval.push_back(bbinding->uri);
+        }
+        const TextureBinding* tbinding = self->getTextureBindings();
+        for (size_t i = 0, len = self->getTextureBindingCount(); i < len; ++i, ++tbinding) {
+            retval.push_back(tbinding->uri);
+        }
+        return retval;
+    }), allow_raw_pointers())
+
+    .function("getBoundingBox", &FilamentAsset::getBoundingBox)
+    .function("getAnimator", &FilamentAsset::getAnimator, allow_raw_pointers())
+    .function("getWireframe", &FilamentAsset::getWireframe)
+    .function("getEngine", &FilamentAsset::getEngine, allow_raw_pointers())
+    .function("releaseSourceData", &FilamentAsset::releaseSourceData);
+
+// This little wrapper exists to get around RTTI requirements in embind.
+struct UbershaderLoader {
+    MaterialProvider* provider;
+    void destroyMaterials() { provider->destroyMaterials(); }
+};
+
+class_<UbershaderLoader>("gltfio$UbershaderLoader")
+    .constructor(EMBIND_LAMBDA(UbershaderLoader, (Engine* engine), {
+        return UbershaderLoader { createUbershaderLoader(engine) };
+    }))
+    .function("destroyMaterials", &UbershaderLoader::destroyMaterials);
+
+class_<AssetLoader>("gltfio$AssetLoader")
+
+    .constructor(EMBIND_LAMBDA(AssetLoader*, (Engine* engine, UbershaderLoader materials), {
+        utils::NameComponentManager* names = nullptr;
+        return AssetLoader::create({ engine, materials.provider, names });
+    }), allow_raw_pointers())
+
+    /// createAssetFromJson ::static method::
+    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer]
+    /// ::retval:: an instance of [FilamentAsset]
+    .function("_createAssetFromJson", EMBIND_LAMBDA(FilamentAsset*,
+            (AssetLoader* self, BufferDescriptor buffer), {
+        return self->createAssetFromJson((const uint8_t*) buffer.bd->buffer, buffer.bd->size);
+    }), allow_raw_pointers())
+
+    /// createAssetFroBinary ::static method::
+    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer]
+    /// ::retval:: an instance of [FilamentAsset]
+    .function("_createAssetFromBinary", EMBIND_LAMBDA(FilamentAsset*,
+            (AssetLoader* self, BufferDescriptor buffer), {
+        return self->createAssetFromBinary((const uint8_t*) buffer.bd->buffer, buffer.bd->size);
+    }), allow_raw_pointers());
+
+class_<ResourceLoader>("gltfio$ResourceLoader")
+    .constructor(EMBIND_LAMBDA(ResourceLoader*, (Engine* engine), {
+        return new ResourceLoader({ engine, utils::Path(), true, true });
+    }), allow_raw_pointers())
+
+    .function("addResourceData", EMBIND_LAMBDA(void, (ResourceLoader* self, std::string url,
+            BufferDescriptor buffer), {
+        self->addResourceData(url, std::move(*buffer.bd));
+    }), allow_raw_pointers())
+
+    .function("loadResources", &ResourceLoader::loadResources, allow_raw_pointers());
 
 } // EMSCRIPTEN_BINDINGS

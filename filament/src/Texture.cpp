@@ -26,7 +26,7 @@
 namespace filament {
 
 using namespace details;
-using namespace driver;
+using namespace backend;
 
 struct Texture::BuilderDetails {
     uint32_t mWidth = 1;
@@ -84,7 +84,8 @@ Texture::Builder& Texture::Builder::rgbm(bool enabled) noexcept {
 }
 
 Texture::Builder& Texture::Builder::usage(Texture::Usage usage) noexcept {
-    mImpl->mUsage = usage;
+    // for now, the public API only allows UPLOADABLE and SAMPLEABLE textures
+    mImpl->mUsage = Texture::Usage(Texture::Usage::DEFAULT | usage);
     return *this;
 }
 
@@ -161,6 +162,9 @@ void FTexture::setImage(FEngine& engine, size_t level,
 
 void FTexture::setExternalImage(FEngine& engine, void* image) noexcept {
     if (mTarget == Sampler::SAMPLER_EXTERNAL) {
+        // The call to setupExternalImage is synchronous, and allows the driver to take ownership of
+        // the external image on this thread, if necessary.
+        engine.getDriverApi().setupExternalImage(image);
         engine.getDriverApi().setExternalImage(mHandle, image);
     }
 }
@@ -175,7 +179,7 @@ void FTexture::setExternalStream(FEngine& engine, FStream* stream) noexcept {
         engine.getDriverApi().setExternalStream(mHandle, stream->getHandle());
     } else {
         mStream = nullptr;
-        engine.getDriverApi().setExternalStream(mHandle, Handle<HwStream>());
+        engine.getDriverApi().setExternalStream(mHandle, backend::Handle<backend::HwStream>());
     }
 }
 
@@ -215,19 +219,20 @@ void FTexture::generateMipmaps(FEngine& engine) const noexcept {
         uint8_t level = 0;
         uint32_t srcw = mWidth;
         uint32_t srch = mHeight;
-        Driver::RenderTargetHandle srcrth = driver.createRenderTarget(TargetBufferFlags::COLOR,
-                srcw, srch, mSampleCount, mFormat, { mHandle, level++, layer }, {}, {});
+        backend::Handle<backend::HwRenderTarget> srcrth = driver.createRenderTarget(TargetBufferFlags::COLOR,
+                srcw, srch, mSampleCount, { mHandle, level++, layer }, {}, {});
 
         // Perform a blit for all miplevels down to 1x1.
-        Driver::RenderTargetHandle dstrth;
+        backend::Handle<backend::HwRenderTarget> dstrth;
         do {
-            uint32_t dstw = std::max(srcw >> 1, 1u);
-            uint32_t dsth = std::max(srch >> 1, 1u);
+            uint32_t dstw = std::max(srcw >> 1u, 1u);
+            uint32_t dsth = std::max(srch >> 1u, 1u);
             dstrth = driver.createRenderTarget(TargetBufferFlags::COLOR, dstw, dsth, mSampleCount,
-                    mFormat, { mHandle, level++, layer }, {}, {});
+                    { mHandle, level++, layer }, {}, {});
             driver.blit(TargetBufferFlags::COLOR,
                     dstrth, { 0, 0, dstw, dsth },
-                    srcrth, { 0, 0, srcw, srch });
+                    srcrth, { 0, 0, srcw, srch },
+                    SamplerMagFilter::LINEAR);
             driver.destroyRenderTarget(srcrth);
             srcrth = dstrth;
             srcw = dstw;

@@ -1,4 +1,4 @@
-# Filament sample iOS app
+# Filament sample iOS apps
 
 This directory contains sample apps that demonstrate how to use the Filament API in an iOS
 application.
@@ -14,8 +14,8 @@ cross-compile Filament for desktop and ARM64 on a macOS host before running the 
 way to do this is by running the following commands at the root of Filament's source tree:
 
 ```
-$ ./build.sh -p desktop release         # build required desktop tools (matc, resgen, etc)
-$ ./build.sh -p ios debug               # cross-compile Filament for iOS
+$ ./build.sh -p desktop -i release         # build required desktop tools (matc, resgen, etc)
+$ ./build.sh -p ios -i debug               # cross-compile Filament for iOS
 ```
 
 This will automatically download Apple's iOS toolchain file for CMake and build Filament for iOS.
@@ -26,8 +26,10 @@ Afterwards, you should find all the Filament libraries inside of `out/ios-debug/
 libfilabridge.a
 libfilaflat.a
 libfilament.a
+libbackend.a
 libutils.a
 libsmol-v.a
+libgeometry.a
 ```
 
 The sample applications expect the libraries to be present here. Likewise, when building the sample
@@ -51,9 +53,10 @@ Open up one of the Xcode projects:
     - hello-triangle/hello-triangle.xcodeproj
     - hello-pbr/hello-pbr.xcodeproj
 
-Each project contains two schemes, `*-Metal` and `*-OpenGL`, which use the Metal and OpenGL backends
-respectively. Before building you will need to select one of the schemes, sign in to your Apple
-developer account, and select an appropriate development team in the project editor.
+Each project contains two schemes, `<sample> Metal` and `<sample> OpenGL`, which use the Metal and
+OpenGL backends respectively. Before building you will need to select one of the schemes, sign in to
+your Apple developer account, select an appropriate development team in the project editor, and
+change the bundle identifier to a unique name.
 
 ## Building
 
@@ -68,3 +71,16 @@ the `out` directory.
 
 Before reporting build errors, please try cleaning the CMake directories first and building again
 from scratch.
+
+## XcodeGen
+
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) is used to generate the Xcode projects. While not
+required to run the samples, XcodeGen makes modifying them easier. Each sample folder contains the
+`project.yml` file used for the sample, which includes a global `app-template.yml` file. Simply run
+
+```
+$ xcodegen
+```
+
+within a sample folder to re-generate the Xcode project. You may need to close and re-open the
+project in Xcode to see changes take effect.
